@@ -1,8 +1,193 @@
-# 实验记录：EPMI 诊断流水线 — 第一轮（GSM8K 基线）
+# 实验记录：EPMI 诊断流水线
+
+**记录人**：Jinglin Xu  
+**最后更新**：2026-06-12
+
+---
+
+# 第二轮：四域全量 + 完整 MCQ 输入（正式版）
+
+**日期**：2026-06-12  
+**状态**：已完成  
+**SLURM 作业 ID**：19162684
+
+## 1. 本轮变更
+
+相比第一轮，本轮做了以下改动：
+
+| 项目 | 第一轮 | 第二轮 |
+|---|---|---|
+| 数据域数量 | 1（GSM8K） | 4（GSM8K、medmcqa、ARC、MMLU） |
+| 每域样本量 | 512 | 2,048 |
+| C4 参考集样本量 | 256 | 1,024 |
+| MCQ 输入格式 | 仅题目文本 | 题目 + 完整选项（A/B/C/D） |
+| GSM8K 格式 | 纯文本 | 纯文本（无变化，无选项） |
+
+**完整 MCQ 输入的理由**：路由器感知的是输入序列的全部 token，仅喂题目而省略选项会遗漏模型实际在推断时接收的信息结构（标签字母、选项语义），导致路由统计偏低，无法反映真实的部署条件。
+
+## 2. 硬件与环境
+
+| 项目 | 值 |
+|---|---|
+| 节点 | gpua048.delta.ncsa.illinois.edu |
+| GPU | NVIDIA A100-SXM4-40GB |
+| 运行时间 | 22:47:35 → 23:10:58（约 23 分钟） |
+| Python | 3.11.14 / PyTorch 2.9.1+cu128 / Transformers 4.57.3 / Datasets 5.0.0 |
+
+## 3. 数据集与输入样例
+
+### C4（预训练参考集）
+- 来源：`allenai/c4`，`en` 子集，`train` split，streaming=True，seed=0
+- 实际处理：**1,024 条 / 287,686 tokens**
+- 预训练路由熵：mean H = 4.1436，range [4.1333, 4.1554]（接近理论最大值 ln64 = 4.1589）
+
+### GSM8K — 数学应用题（formatter: `plain`）
+- 来源：`openai/gsm8k`，`main` 子集，`train` split
+- **实际使用：2,048 条**
+- 输入格式：仅题目文本，无答案，无选项
+- 输入样例：
+  ```
+  Stefan goes to a restaurant to eat dinner with his family. They order an appetizer
+  that costs $10 and 4 entrees that are $20 each. If they tip 20% of the total for
+  the waiter, what is the total amount of money that they spend at the restaurant?
+  ```
+
+### medmcqa — 医学执照考试 MCQ（formatter: `medmcqa_mcq`）
+- 来源：`medmcqa`，`train` split（无子集）
+- **实际使用：2,048 条**（数据集共 182,822 条，按需采样）
+- 输入格式：题目 + A/B/C/D 四个选项（字段 opa/opb/opc/opd）
+- 输入样例：
+  ```
+  True statements about asbestosis
+  A. Causes Lung Ca
+  B. Pleural mesothelioma
+  C. Peritoneal mesothelioma
+  D. All of the above
+  ```
+
+### ARC-Challenge — 小学科学 MCQ（formatter: `arc_mcq`）
+- 来源：`allenai/ai2_arc`，`ARC-Challenge` 子集，`test` split
+- **实际使用：1,172 条**（test split 仅 1,172 条，低于请求的 2,048，已发出 [warn]）
+- 输入格式：题目 + 选项（choices.label 与 choices.text 拼合）
+- 输入样例：
+  ```
+  Cities control the amount of pollution that is allowed to come from cars.
+  How does this most likely help people?
+  A. The air stays cleaner.
+  B. Cars can travel at faster speeds.
+  C. The skills of the drivers improve.
+  D. It becomes safer to drive on the roads.
+  ```
+
+### MMLU — 大学水平学科知识 MCQ（formatter: `mmlu_mcq`）
+- 来源：`cais/mmlu`，`all` 子集，`test` split
+- **实际使用：2,048 条**（test split 共 14,042 条，随机抽取）
+- 输入格式：题目 + A/B/C/D（choices 列表按顺序标注）
+- 输入样例：
+  ```
+  A state built a casino and issued bonds to finance its construction. On five
+  occasions, there were episodes of violence in various casinos in the state...
+  Is this law likely to be held constitutional if most casinos in the state were
+  owned by those from out-of-state?
+  A. Yes, because the act was expressly authorized by the state legislature.
+  B. Yes, but only if the local interest in safety outweighs the burden of interstate commerce.
+  C. No, because out-of-state casinos are part of interstate commerce.
+  D. No, because the statute violates the due process rights of the owners of the casinos.
+  ```
+
+## 4. 诊断结果
+
+### 4.1 综合 EPMI 汇总
+
+| 域 | n_samples | EPMI\_RED | EPMI\_EAD | **EPMI** |
+|---|---|---|---|---|
+| gsm8k | 2,048 | 0.0143 | 0.0148 | **0.0145** |
+| medmcqa | 2,048 | 0.0485 | 0.0512 | **0.0498** |
+| arc | 1,172 | 0.0176 | 0.0239 | **0.0207** |
+| mmlu | 2,048 | 0.0024 | 0.0100 | **0.0062** |
+
+**排序**：medmcqa (0.050) ≫ arc (0.021) > gsm8k (0.015) ≫ mmlu (0.006)
+
+### 4.2 逐层 RED / EAD 明细
+
+| 层 | RED_gsm8k | EAD_gsm8k | RED_medmcqa | EAD_medmcqa | RED_arc | EAD_arc | RED_mmlu | EAD_mmlu |
+|---|---|---|---|---|---|---|---|---|
+| 0 | 0.0054 | 0.0049 | 0.0073 | 0.0111 | 0.0060 | 0.0081 | 0.0018 | 0.0043 |
+| 1 | 0.0017 | 0.0033 | 0.0045 | 0.0069 | 0.0026 | 0.0041 | 0.0011 | 0.0021 |
+| 2 | 0.0044 | 0.0058 | 0.0170 | 0.0212 | 0.0057 | 0.0082 | 0.0020 | 0.0042 |
+| 3 | 0.0051 | 0.0084 | 0.0136 | 0.0168 | 0.0060 | 0.0090 | 0.0016 | 0.0047 |
+| 4 | 0.0057 | 0.0074 | 0.0146 | 0.0185 | 0.0063 | 0.0097 | 0.0017 | 0.0054 |
+| 5 | 0.0076 | 0.0108 | 0.0186 | 0.0271 | 0.0081 | 0.0149 | 0.0013 | 0.0063 |
+| 6 | 0.0099 | 0.0156 | 0.0219 | 0.0301 | 0.0076 | 0.0153 | 0.0015 | 0.0081 |
+| 7 | 0.0061 | 0.0093 | 0.0131 | 0.0207 | 0.0076 | 0.0160 | 0.0006 | 0.0071 |
+| 8 | 0.0118 | 0.0160 | 0.0161 | 0.0207 | 0.0095 | 0.0205 | 0.0002 | 0.0064 |
+| 9 | 0.0120 | 0.0198 | 0.0226 | 0.0265 | 0.0069 | 0.0163 | 0.0016 | 0.0085 |
+| 10 | 0.0048 | 0.0094 | 0.0270 | 0.0402 | 0.0059 | 0.0171 | 0.0005 | 0.0074 |
+| 11 | 0.0135 | 0.0184 | 0.0462 | 0.0629 | 0.0111 | 0.0219 | 0.0011 | 0.0087 |
+| 12 | 0.0178 | 0.0235 | 0.0469 | 0.0759 | 0.0251 | 0.0461 | 0.0026 | 0.0140 |
+| 13 | 0.0163 | 0.0219 | 0.0469 | 0.0784 | 0.0199 | 0.0352 | 0.0032 | 0.0150 |
+| 14 | 0.0093 | 0.0135 | 0.0643 | 0.0941 | 0.0168 | 0.0296 | 0.0025 | 0.0162 |
+| 15 | 0.0085 | 0.0116 | 0.0380 | 0.0646 | 0.0150 | 0.0291 | 0.0010 | 0.0115 |
+
+**深层集中模式**：所有域的 EAD 峰值均集中在第 11–14 层，medmcqa 在第 14 层达到最大值 EAD=0.094，是 gsm8k 同层的 7 倍。
+
+### 4.3 稳定性检验（3 次独立重采样）
+
+| 域 | 指标 | Draw 1 | Draw 2 | Draw 3 | 均值 | CV | 结论 |
+|---|---|---|---|---|---|---|---|
+| gsm8k | RED | 0.0140 | 0.0141 | 0.0139 | 0.0140 | 0.006 | ✓ OK |
+| gsm8k | EAD | 0.0145 | 0.0146 | 0.0144 | 0.0145 | 0.007 | ✓ OK |
+| medmcqa | RED | 0.0492 | 0.0492 | 0.0495 | 0.0493 | 0.004 | ✓ OK |
+| medmcqa | EAD | 0.0520 | 0.0518 | 0.0523 | 0.0520 | 0.004 | ✓ OK |
+| arc | RED | 0.0176 | 0.0176 | 0.0176 | 0.0176 | 0.000 | ✓ OK（全量=整个test split）|
+| arc | EAD | 0.0239 | 0.0239 | 0.0239 | 0.0239 | 0.000 | ✓ OK（全量=整个test split）|
+| mmlu | RED | 0.0029 | 0.0025 | 0.0027 | 0.0027 | 0.078 | ✓ OK |
+| mmlu | EAD | 0.0107 | 0.0102 | 0.0103 | 0.0104 | 0.024 | ✓ OK |
+
+所有域 CV < 0.10，全部通过稳定性阈值。
+
+## 5. 分析与解读
+
+### 5.1 域排序的直觉解释
+
+- **medmcqa（0.050）**：高度专业化的医学词汇（解剖名称、疾病、药物）与 C4 网页文本分布差距最大。选项本身（如"Pleural mesothelioma"）也引导路由器激活了预训练时罕见的专业化 expert。
+- **arc（0.021）**：小学科学题，语言结构简单，但涉及因果推理，与网页文本有一定结构差异。
+- **gsm8k（0.015）**：数学应用题，是流畅英文日常叙述，OLMoE 预训练时见过大量类似文本，路由几乎不需要调整。
+- **mmlu（0.006）**：MMLU 覆盖 57 个学科，高度多样性导致路由在所有 expert 上均匀分布，与 C4 的均匀路由高度一致，EPMI 接近于 0。这是**多样性稀释效应**：不是没有错位，而是各学科的错位方向相互抵消。
+
+### 5.2 与第一轮 GSM8K 的对比
+
+| 设置 | EPMI (第一轮) | EPMI (第二轮) |
+|---|---|---|
+| GSM8K | 0.0149 | 0.0145 |
+
+两轮 GSM8K 结果几乎相同（差 0.0004），说明从 256→1024 条 C4 参考集、以及 512→2048 条 GSM8K 均未改变结论，基准稳健。
+
+### 5.3 MCQ 格式对 medmcqa 的影响
+
+早期仅喂题目时 medmcqa EPMI ≈ 0.032；加入选项后升至 0.050（提升 56%）。选项中的医学术语（如"Peritoneal mesothelioma"）是路由偏移的重要来源，在实际推断场景中模型会接收完整 MCQ，因此使用完整格式更能反映真实错位程度。
+
+## 6. 保存的文件
+
+```
+results/run_20260612_224930/
+├── config.json          超参 + 各域输入样例（domain_input_examples 字段）
+├── pretrain_stats.pt    C4 1024条参考集 RoutingStats [avg_routing_probs, entropy, expert_load]
+├── gsm8k_stats.pt       GSM8K 2048条 RoutingStats
+├── medmcqa_stats.pt     medmcqa 2048条 RoutingStats
+├── arc_stats.pt         ARC 1172条 RoutingStats
+├── mmlu_stats.pt        MMLU 2048条 RoutingStats
+├── metrics.json         所有标量指标 + 逐层向量 + 稳定性数据
+└── summary.txt          stdout 完整输出
+```
+
+---
+
+# 第一轮：GSM8K 基线（仅题目文本）
 
 **日期**：2026-06-12  
 **记录人**：Jinglin Xu  
-**状态**：已完成，待扩展至 medmcqa
+**状态**：已完成，由第二轮取代
 
 ---
 
@@ -279,8 +464,8 @@ gsm8k    = torch.load("results/run_20260612_204437/gsm8k_stats.pt")
 
 ## 8. 后续计划
 
-1. **加入 medmcqa**：打开 `config.py` 中注释掉的那一行，重新提交作业，观察 EPMI 是否显著高于 GSM8K（预期 EPMI > 0.1）
-2. **升高预训练参考样本量至 1024**：确认 256 条的基准与 1024 条一致
+1. ~~**加入 medmcqa、ARC、MMLU**~~：✅ 已在第二轮完成（SLURM 19162684）
+2. ~~**升高预训练参考样本量至 1024**~~：✅ 已在第二轮完成（287,686 tokens）
 3. **实现 RLC**：扩展 routing_extractor.py，在前向传播时同时收集 per-token CE loss 和 per-layer top-k 分配，然后补全 metrics.py 中的 compute_rlc()
 4. **加更多域做 EPMI 排序**：覆盖代码、法律、金融等，验证 EPMI 是否单调预测微调增益
 5. **ECI 实验**：在高 EPMI 域上实施 Expert Creation Intervention，验证 EPMI 的预测有效性
