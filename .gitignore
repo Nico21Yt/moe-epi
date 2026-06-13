@@ -1,0 +1,15 @@
+# SLURM output files
+*.out
+*.err
+
+# Large tensor checkpoints (save separately, not in git)
+results/**/*.pt
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Editor / OS
+.DS_Store
+*.swp
